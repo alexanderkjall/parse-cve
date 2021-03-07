@@ -1,105 +1,22 @@
 use serde_json;
-use serde_derive;
 use clap::Clap;
 use postgres::{Client, NoTls};
-use chrono::{Utc, DateTime, NaiveDateTime};
+use chrono::{Utc, DateTime, NaiveDateTime, Datelike};
 
-#[derive(Default, Debug, Clone, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Cve {
-    #[serde(rename = "Modified")]
-    pub modified: String,
-    #[serde(rename = "Published")]
-    pub published: String,
-    pub access: Access,
-    pub assigner: String,
-    #[serde(default)]
-    pub capec: Vec<Capec>,
-    pub cvss: Option<f64>,
-    #[serde(rename = "cvss-time")]
-    pub cvss_time: Option<String>,
-    #[serde(rename = "cvss-vector")]
-    pub cvss_vector: Option<String>,
-    pub cwe: String,
-    pub id: String,
-    pub impact: Impact,
-    #[serde(rename = "last-modified")]
-    pub last_modified: String,
-    pub references: Vec<String>,
-    pub summary: String,
-    #[serde(rename = "vulnerable_configuration")]
-    pub vulnerable_configuration: Vec<String>,
-    #[serde(rename = "vulnerable_configuration_cpe_2_2")]
-    pub vulnerable_configuration_cpe22: Vec<::serde_json::Value>,
-    #[serde(rename = "vulnerable_product")]
-    pub vulnerable_product: Vec<String>,
-}
+mod circl;
+mod error;
+mod nvd;
 
-#[derive(Default, Debug, Clone, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Access {
-    pub authentication: Option<String>,
-    pub complexity: Option<String>,
-    pub vector: Option<String>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Capec {
-    pub id: String,
-    pub name: String,
-    pub prerequisites: String,
-    #[serde(rename = "related_weakness")]
-    pub related_weakness: Vec<String>,
-    pub solutions: String,
-    pub summary: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Impact {
-    pub availability: Option<String>,
-    pub confidentiality: Option<String>,
-    pub integrity: Option<String>,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    Generic(String),
-}
-
-impl From<&str> for Error {
-    fn from(err: &str) -> Error {
-        Error::Generic(err.to_string())
-    }
-}
-
-impl From<postgres::Error> for Error {
-    fn from(err: postgres::Error) -> Error {
-        Error::Generic(format!("{:?}", err))
-    }
-}
-
-impl From<config::ConfigError> for Error {
-    fn from(err: config::ConfigError) -> Error {
-        Error::Generic(format!("{:?}", err))
-    }
-}
-
-impl From<chrono::ParseError> for Error {
-    fn from(err: chrono::ParseError) -> Error {
-        Error::Generic(format!("{:?}", err))
-    }
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
+use error::Result;
+use circl::Cve;
 
 #[derive(Clap)]
 #[clap(version = "1.0", author = "Alexander Kjäll <alexander.kjall@gmail.com>")]
 struct Opts {
     #[clap(short)]
-    setup_db: bool
+    setup_db: bool,
+    #[clap(short)]
+    full_download: bool
 }
 
 fn db_connection() -> Result<Client> {
@@ -296,8 +213,17 @@ fn main() {
 
     let mut client = db_connection().unwrap();
     if opts.setup_db {
-
         setup_db(&mut client).unwrap();
+    } else if opts.full_download {
+        //for year in 2002..2003 {
+        for year in 2002..Utc::now().year() {
+            let root = nvd::download(year as u16).unwrap();
+
+            for cve_item in root.cve_items {
+                let cve = cve_item.into();
+                store_cve(&mut client, &cve).unwrap();
+            }
+        }
     } else {
         let body = reqwest::blocking::get("https://cve.circl.lu/api/last")
             .unwrap().text().unwrap();
